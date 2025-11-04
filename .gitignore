@@ -1,0 +1,47 @@
+# Node modules (caso tenha)
+node_modules/
+
+# k6 output files
+*.json
+*.csv
+*.txt
+*.log
+
+# macOS trash
+.DS_Store
+
+# VSCode
+.vscode/
+
+# Docker stuff
+docker-compose.override.yml
+*.pid
+
+# Grafana data (NÃO versionar volumes)
+grafana/
+grafana-data/
+grafana-storage/
+grafana/plugins/
+grafana/provisioning/
+grafana/data/
+grafana/logs/
+grafana/dashboards/*.tmp
+
+# InfluxDB volumes
+influxdb/
+influxdb-data/
+influxdb-storage/
+
+# Local containers/volumes
+data/
+storage/
+volumes/
+
+# Linux and Windows system files
+*.swp
+Thumbs.db
+
+# Env vars
+.env
+.env.local
+*.env
