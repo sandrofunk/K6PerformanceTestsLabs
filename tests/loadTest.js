@@ -1,119 +1,106 @@
-// Importa libs core do k6
-import http from "k6/http";
-import { check, sleep } from "k6";
+// Importa os módulos principais do K6
+import http from 'k6/http'; // Permite fazer requisições HTTP (GET, POST, PUT, etc.)
+import { check, sleep } from 'k6'; // check = validações; sleep = pausas simulando tempo de uso real
+import { Trend, Rate, Counter } from 'k6/metrics'; // Tipos de métricas personalizadas
 
-// Função de login para obter token
-import { login } from "../utils/auth.js";
+// ======================================================================
+// 🔹 CRIAÇÃO DE MÉTRICAS PERSONALIZADAS
+// ======================================================================
 
-// Importa métricas customizadas
-import { Trend, Counter } from "k6/metrics";
+// "Trend" registra valores numéricos e calcula estatísticas (média, mediana, percentis, etc.)
+export let TempoResposta = new Trend('tempo_resposta_ms'); // Guarda o tempo total de resposta em milissegundos
+export let TotalDeRequisicoesRealizadas = new Trend('total_de_requisicoes_realizadas') // Total de requisições HTTP feitas.
 
-// === MÉTRICAS PERSONALIZADAS ===
-// Trend = guarda valores numéricos e permite percentis
-const latency = new Trend("latency");  // mede latência das requisições
-// Counter = soma valores (utilizamos para throughput)
-const requestCount = new Counter("requests_per_second");
+// "Rate" mede a taxa de sucesso (0 a 1) — útil para verificar se a maioria das requisições foram bem-sucedidas
+export let TaxaSucesso = new Rate('taxa_sucesso'); // Guarda a proporção de requisições com status 200
 
+// "Counter" apenas soma ocorrências — ideal para contar falhas, erros ou exceções
+export let Falhas = new Counter('falhas_requisicoes'); // Conta quantas requisições falharam
 
-// === CONFIGURAÇÕES PRINCIPAIS DO TESTE ===
-export const options = {
-  // Quantidade de usuários virtuais
-  vus: 5,
+// ======================================================================
+// 🔹 CONFIGURAÇÕES GERAIS DO TESTE
+// ======================================================================
 
-  // Tempo total de execução
-  duration: "20s",
+export let options = {
+  vus: 10,            // Quantidade de "usuários virtuais" simultâneos (10 conexões em paralelo)
+  duration: '30s',    // Duração total do teste (tempo de execução = 30 segundos)
 
-  // Regras de aprovação (SLO/SLI)
+  // Thresholds = metas de desempenho (o teste "passa" ou "falha" com base nesses limites)
   thresholds: {
-    // Latência total 95% < 800ms, 99% < 1200ms
-    http_req_duration: ["p(95)<800", "p(99)<1200"],
-
-    // TTFB (time to first byte) — quanto o servidor demorou pra começar a responder
-    http_req_waiting: ["p(95)<300"],
-
-    // Erros de request < 1%
-    http_req_failed: ["rate<0.01"],
-
-    // Checks devem passar em pelo menos 98% das execuções
-    checks: ["rate>0.98"],
-
-    // Throughput mínimo — precisa fazer mais de 100 requisições
-    http_reqs: ["count>100"],
-
-    // Thresholds específicos por endpoint (tag baseado no request)
-    "http_req_duration{endpoint:products}": ["p(95)<500"],
-    "http_req_duration{endpoint:carts}": ["p(95)<700"],
+    http_req_duration: ['p(95)<500'], // 95% das requisições devem responder em menos de 500ms
+    taxa_sucesso: ['rate>0.95'],      // Pelo menos 95% das requisições devem ser bem-sucedidas
   },
 };
 
+// ======================================================================
+// 🔹 FUNÇÃO PRINCIPAL - executada por cada usuário virtual (VU)
+// ======================================================================
 
-// === FUNÇÃO PRINCIPAL QUE CADA VU EXECUTA ===
 export default function () {
+  // Endpoint que será testado (API pública estável)
+  const url = 'https://jsonplaceholder.typicode.com/posts';
 
-  // Login e pega token JWT
-  const token = login();
+  // Envia uma requisição GET para a API e armazena a resposta na variável "res"
+  const res = http.get(url);
 
-  // Headers com Authorization
-  const headers = {
-    Authorization: `Bearer ${token}`,
-    "Content-Type": "application/json",
-  };
+  // ==================================================================
+  // 🔹 REGISTRO DAS MÉTRICAS PERSONALIZADAS
+  // ==================================================================
 
+  // Adiciona o tempo total da resposta à métrica de "TempoResposta"
+  TempoResposta.add(res.timings.duration);
 
-  // ==========================================
-  // ✅ GET /products — lista produtos
-  // ==========================================
-  const productsRes = http.get("https://fakestoreapi.com/products", {
-    headers,
-    tags: { endpoint: "products" },  // tag usada nos thresholds
+  // Adiciona o tempo total da resposta à métrica de "TotalDeRequisicoesRealizadas"
+  TotalDeRequisicoesRealizadas.add(res.timings.duration);
+
+  // Se o status for 200 (sucesso), adiciona "true" (1) à TaxaSucesso; caso contrário, "false" (0)
+  TaxaSucesso.add(res.status === 200);
+
+  // Caso o status NÃO seja 200, incrementa o contador de falhas
+  if (res.status !== 200) {
+    Falhas.add(1);
+  }
+
+  // ==================================================================
+  // 🔹 TRATAMENTO DO CORPO DA RESPOSTA (JSON)
+  // ==================================================================
+
+  // Como a resposta é JSON, fazemos o parse para transformar em objeto JavaScript
+  let data;
+  try {
+    data = JSON.parse(res.body); // Tenta converter o corpo da resposta
+  } catch (e) {
+    data = null; // Se der erro (resposta vazia ou inválida), define como null
+  }
+
+  // ==================================================================
+  // 🔹 VALIDAÇÕES (CHECKS)
+  // ==================================================================
+
+  // "check" executa testes de validação sobre a resposta
+  // Cada item é uma asserção (condição) que deve retornar true ou false
+  check(res, {
+    'status é 200': (r) => r.status === 200, // Verifica se a resposta teve status 200 (OK)
+    'resposta é JSON válida': () => data !== null, // Garante que o corpo é JSON válido
+    'resposta contém lista de posts': () => Array.isArray(data) && data.length > 0, // Garante que retornou uma lista com posts
   });
 
-  // Adiciona métricas de performance customizadas
-  latency.add(productsRes.timings.duration);
-  requestCount.add(1);
+  // ==================================================================
+  // 🔹 PAUSA ENTRE REQUISIÇÕES
+  // ==================================================================
 
-  // Checks de resposta
-  check(productsRes, {
-    "GET /products status 200": (r) => r.status === 200,
-    "GET /products é array": (r) => Array.isArray(r.json()),
-    "primeiro produto tem id e title": (r) => {
-      const body = r.json();
-      return body.length > 0 && body[0].id && body[0].title;
-    },
-    "GET /products < 500ms": (r) => r.timings.duration < 500,
-  });
-
-
-  // ==========================================
-  // ✅ POST /carts — cria carrinho
-  // ==========================================
-  const orderPayload = JSON.stringify({
-    userId: 1,
-    date: "2023-01-01",
-    products: [{ productId: 1, quantity: 2 }],
-  });
-
-  const cartsRes = http.post(
-    "https://fakestoreapi.com/carts",
-    orderPayload,
-    {
-      headers,
-      tags: { endpoint: "carts" }, // tag usada no threshold do endpoint
-    }
-  );
-
-  // Registra métricas custom
-  latency.add(cartsRes.timings.duration);
-  requestCount.add(1);
-
-  // Checks
-  check(cartsRes, {
-    "POST /carts status 200|201": (r) => r.status === 200 || r.status === 201,
-    "POST /carts tem id": (r) => r.json("id") !== undefined,
-    "POST /carts < 700ms": (r) => r.timings.duration < 700,
-  });
-
-
-  // Simula tempo real de usuário (1 a 4 segundos)
-  sleep(Math.random() * 3 + 1);
+  // Faz o VU "esperar" 1 segundo antes de fazer a próxima requisição
+  // Isso evita sobrecarga e simula o comportamento real de um usuário
+  sleep(1);
 }
+
+// ======================================================================
+// 🧠 RESUMO DO FLUXO DE EXECUÇÃO
+// ======================================================================
+//
+// 1️⃣ - O K6 cria 10 usuários virtuais (vus: 10)
+// 2️⃣ - Cada VU executa a função principal repetidamente por 30 segundos
+// 3️⃣ - A cada ciclo, ele envia um GET para a API e registra tempo, sucesso e falhas
+// 4️⃣ - As validações (check) verificam se a resposta está correta
+// 5️⃣ - O K6 exibe no final estatísticas completas: duração média, taxa de sucesso, p95, etc.
+// ======================================================================
